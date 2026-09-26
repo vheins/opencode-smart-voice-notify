@@ -34,7 +34,7 @@ import {
   mockEvents,
   wait,
 } from '../setup.js';
-import SmartVoiceNotifyPlugin from '../../src/index.js';
+import { SmartVoiceNotifyPlugin } from '../../src/index.js';
 import { getTTSConfig } from '../../src/util/tts.js';
 
 describe('Voice Caching for Repeated TTS', () => {

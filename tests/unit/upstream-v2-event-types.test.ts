@@ -39,7 +39,7 @@ import {
   createMockEvent,
   wait,
 } from '../setup.js';
-import SmartVoiceNotifyPlugin from '../../src/index.js';
+import { SmartVoiceNotifyPlugin } from '../../src/index.js';
 
 describe('Upstream SDK v2 Event Types', () => {
   let mockClient: ReturnType<typeof createMockClient>;

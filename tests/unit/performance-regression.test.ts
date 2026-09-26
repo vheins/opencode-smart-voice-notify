@@ -77,7 +77,7 @@ mock.module('../../src/util/tts.js', () => {
 });
 
 // Import plugin AFTER module mock is registered
-import SmartVoiceNotifyPlugin from '../../src/index.js';
+import { SmartVoiceNotifyPlugin } from '../../src/index.js';
 
 describe('Performance Regression - Config & TTS Re-creation', () => {
   let mockClient: ReturnType<typeof createMockClient>;

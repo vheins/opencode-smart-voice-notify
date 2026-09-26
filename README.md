@@ -70,6 +70,15 @@ The plugin automatically tries multiple TTS engines in order, falling back if on
 - **Auto-boost volume** if too low
 - **TUI toast** notifications
 
+## Compatibility
+
+This plugin ships a **dual V1 + V2** entry point:
+
+- **OpenCode V2 (2.0.x)** — loaded through `@opencode/plugin`; the plugin's `id`/`setup` fields are used. The V2 adapter bridges the V2 context (events, session lookups, and a synthesised `$` shell runner) onto the same notification engine.
+- **OpenCode V1 (1.18.29+)** — loaded through the legacy `server` field, unchanged behaviour.
+
+> Toast notifications are only available on V1. OpenCode V2 does not currently expose a plugin-facing toast API, so toasts are a silent no-op there; desktop notifications, TTS, sound playback, and webhooks are unaffected.
+
 ## Installation
 
 ### Option 1: From npm/Bun (Recommended)

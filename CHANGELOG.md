@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-26
+
+OpenCode **V2** compatibility release. The plugin now loads on OpenCode v2.0.x while remaining backward compatible with V1.
+
+### Added
+
+- **OpenCode V2 plugin support** — The package entry point now exports a dual V1/V2 plugin object (`{ id, setup, server }`), matching the `@opencode/plugin` `Plugin.define` contract. OpenCode V2 reads `id`/`setup`; OpenCode V1 (1.18.29+) reads `server`. Fixes the load error `Plugin must export a default definition with an id and an effect or setup function.`
+- **`src/v2.ts` adapter** — Bridges the V2 `Context` to the existing V1 notification engine:
+  - **Shell runner shim** — V2 no longer provides the `$` helper, so a `node:child_process` based runner re-implements the tagged-template API (`.quiet()`, `.nothrow()`, `.timeout(ms)`) used by the audio/TTS/volume helpers.
+  - **Client shim** — Maps `session.get` to `ctx.session.get` and keeps a safe no-op `tui.showToast` (V2 exposes no plugin-facing toast API).
+  - **Event translation** — Converts V2 events (`session.created`, `session.execution.succeeded`, `session.execution.failed`, `permission.asked`, `permission.replied`, `form.created`, `form.replied`, `form.cancelled`, `session.inbox.enqueued`) into the V1 `{ type, properties }` shape consumed by the existing handler.
+- **New unit tests** (`tests/unit/v2-adapter.test.ts`) covering the dual entry point, event translation, de-duplication, session→location routing, shell shim, client shim, and `setup()` wiring.
+
+### Fixed
+
+- **Completion notifications on V2** — V2 defines `session.idle` in its event schema but never emits it; the actual agent-completion signal is `session.execution.succeeded`. The adapter now maps it to the idle/completion handler so the "task finished" notification, sound, and TTS fire again.
+- **Duplicated/echoed audio on V2** — V2 loads the plugin once per location while every instance shares one process-wide event stream. Two guards were added: process-wide event-id de-duplication, and location filtering backed by a session→location registry so location-less events (e.g. `session.execution.succeeded`) are routed to the correct instance.
+
+### Changed
+
+- **`src/index.ts`** is now a thin dual-export entry point; the V1 implementation moved verbatim to **`src/plugin.ts`** (exported as the named `SmartVoiceNotifyPlugin`).
+- **`package.json`** — Version bumped to `1.5.0`; added `@opencode/plugin` dependency; added an `exports` map and a root `server.js` bridge entrypoint; added `opencode-v2` keyword; `build`/`build:types` scripts renamed to `compile`/`compile:types` so git installs do not trigger a failing npm prepare step; `msedge-tts` moved to `optionalDependencies` (it is only a lazy fallback for the `edge` engine).
+- **Tests** now import the named `SmartVoiceNotifyPlugin` export from `src/index.js`.
+
 ## [1.4.0] - 2026-06-11
 
 A compatibility and polish release. Adds full OpenCode SDK v1/v2 client shape support, voice caching, VS Code focus detection, config hot-reload, and brings all dependencies up to date.

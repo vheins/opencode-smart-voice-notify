@@ -19,7 +19,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import SmartVoiceNotifyPlugin from '../../src/index.js';
+import { SmartVoiceNotifyPlugin } from '../../src/index.js';
 import type { Session, PluginEvent } from '../../src/types/opencode-sdk.js';
 import {
   createTestTempDir,
