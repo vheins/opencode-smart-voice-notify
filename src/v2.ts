@@ -21,6 +21,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { resolve as resolvePath } from 'node:path';
 
 import { Plugin } from '@opencode/plugin';
 
@@ -32,10 +33,75 @@ export const PLUGIN_ID = 'smart-voice-notify';
 
 /** Minimal shape of the V2 event envelope we consume. */
 interface V2EventEnvelope {
+  id?: string;
   type: string;
   created?: number;
+  location?: { directory?: string; workspaceID?: string };
   data?: Record<string, unknown>;
 }
+
+// ============================================================
+// Cross-instance event de-duplication
+// ============================================================
+
+/**
+ * OpenCode V2 instantiates a server plugin once per location (project
+ * directory), yet every instance shares a single process-wide event stream
+ * (`ctx.event.subscribe()` maps to `GET /api/event`).  Without a guard each
+ * instance reacts to every event, so a single notification is spoken once per
+ * loaded location — heard by the user as overlapping / echoing audio.
+ *
+ * We therefore remember the unique id of each event in a process-wide registry
+ * (stored on `globalThis` so it survives module re-evaluation and is shared by
+ * every instance) and let only the first instance to observe an event act on
+ * it.  Distinct events keep distinct ids, so genuine concurrent notifications
+ * are unaffected.
+ */
+const PROCESSED_EVENT_TTL_MS = 15_000;
+const PROCESSED_EVENT_MAX = 1024;
+const PROCESSED_EVENTS_KEY = Symbol.for('opencode-smart-voice-notify.processed-events');
+
+interface ProcessedEventRegistry {
+  seen: Map<string, number>;
+}
+
+const getProcessedEventRegistry = (): ProcessedEventRegistry => {
+  const globalStore = globalThis as unknown as Record<symbol, ProcessedEventRegistry | undefined>;
+  let registry = globalStore[PROCESSED_EVENTS_KEY];
+  if (!registry) {
+    registry = { seen: new Map<string, number>() };
+    globalStore[PROCESSED_EVENTS_KEY] = registry;
+  }
+  return registry;
+};
+
+/**
+ * Record an event id and report whether it had already been handled.
+ * Returns `false` (i.e. "not a duplicate") when the id is missing so that an
+ * id-less event is never silently dropped.
+ */
+export const isDuplicateEvent = (eventId: string | undefined): boolean => {
+  if (!eventId) return false;
+
+  const registry = getProcessedEventRegistry();
+  const now = Date.now();
+
+  if (registry.seen.size >= PROCESSED_EVENT_MAX) {
+    for (const [id, timestamp] of registry.seen) {
+      if (now - timestamp > PROCESSED_EVENT_TTL_MS) {
+        registry.seen.delete(id);
+      }
+    }
+  }
+
+  const previous = registry.seen.get(eventId);
+  if (previous !== undefined && now - previous <= PROCESSED_EVENT_TTL_MS) {
+    return true;
+  }
+
+  registry.seen.set(eventId, now);
+  return false;
+};
 
 // ============================================================
 // Shell runner shim
@@ -333,11 +399,28 @@ export const smartVoiceNotifyV2: Plugin.Plugin = Plugin.define({
     const abort = new AbortController();
     let disposed = false;
 
+    // Normalise the instance's own location once so event envelopes can be
+    // matched regardless of trailing-slash / relative-path differences.
+    const ownDirectory = resolvePath(directory);
+
     const eventTask = (async () => {
       try {
         for await (const raw of ctx.event.subscribe({ signal: abort.signal })) {
           if (disposed) break;
-          const translated = translateV2Event(raw as unknown as V2EventEnvelope);
+          const envelope = raw as unknown as V2EventEnvelope;
+          // OpenCode V2 loads this plugin once per location while all instances
+          // share one process-wide event stream.  Ignore events that belong to a
+          // different location so each notification is handled by the instance
+          // for the location it actually happened in (preserving per-project
+          // names and sounds).
+          const eventDirectory = envelope.location?.directory;
+          if (eventDirectory && resolvePath(eventDirectory) !== ownDirectory) continue;
+          // Safety net for events that carry no location (or for two instances
+          // that share a directory): let only the first observer handle it so
+          // audio is never played once per loaded location.
+          const eventKey = envelope.id ?? (envelope.created !== undefined ? `${envelope.type}:${envelope.created}` : undefined);
+          if (isDuplicateEvent(eventKey)) continue;
+          const translated = translateV2Event(envelope);
           if (!translated) continue;
           try {
             await handlers.event?.({ event: translated });

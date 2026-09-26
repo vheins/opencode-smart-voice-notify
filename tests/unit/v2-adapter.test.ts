@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Import the BUILT package entry point (dist/index.js) exactly as OpenCode would.
-import pkg, { SmartVoiceNotifyPlugin, translateV2Event, createShellRunner, createClientShim, PLUGIN_ID } from '../../dist/index.js';
+import pkg, { SmartVoiceNotifyPlugin, translateV2Event, createShellRunner, createClientShim, isDuplicateEvent, PLUGIN_ID } from '../../dist/index.js';
 
 describe('V2 package entry (dist/index.js)', () => {
   test('default export is a V2 definition object with id + setup', () => {
@@ -217,6 +217,120 @@ describe('V2 setup() wiring', () => {
     await cleanup?.();
     unsubscribed = true;
     expect(unsubscribed).toBe(true);
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+    delete process.env.OPENCODE_CONFIG_DIR;
+  });
+});
+
+describe('V2 cross-instance event de-duplication', () => {
+  test('first sighting of an event id is not a duplicate', () => {
+    expect(isDuplicateEvent(`evt-${Math.random()}`)).toBe(false);
+  });
+
+  test('the same event id seen twice is a duplicate', () => {
+    const id = `evt-${Math.random()}`;
+    expect(isDuplicateEvent(id)).toBe(false);
+    expect(isDuplicateEvent(id)).toBe(true);
+    expect(isDuplicateEvent(id)).toBe(true);
+  });
+
+  test('distinct event ids are both handled', () => {
+    const a = `evt-a-${Math.random()}`;
+    const b = `evt-b-${Math.random()}`;
+    expect(isDuplicateEvent(a)).toBe(false);
+    expect(isDuplicateEvent(b)).toBe(false);
+  });
+
+  test('an event without an id is never treated as a duplicate', () => {
+    expect(isDuplicateEvent(undefined)).toBe(false);
+    expect(isDuplicateEvent(undefined)).toBe(false);
+  });
+
+  test('two plugin instances share the process-wide registry (only one handles the event)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'svn-v2-dup-'));
+    process.env.OPENCODE_CONFIG_DIR = tmp;
+    fs.writeFileSync(path.join(tmp, 'smart-voice-notify.jsonc'), JSON.stringify({ enabled: false }));
+
+    const makeCtx = (eventId: string) => ({
+      location: { directory: tmp, project: { id: 'p1', directory: tmp, canonical: tmp } },
+      options: {},
+      session: { get: async () => ({ id: 'ses_1' }) },
+      event: {
+        subscribe: ({ signal }: { signal?: AbortSignal } = {}) => ({
+          [Symbol.asyncIterator]: () => {
+            let done = false;
+            return {
+              next: async () => {
+                if (done || signal?.aborted) return { done: true, value: undefined };
+                done = true;
+                return { done: false, value: { id: eventId, type: 'session.idle', data: { sessionID: 'ses_1' } } };
+              },
+            };
+          },
+        }),
+      },
+    });
+
+    // Simulate the same event id being delivered to two independently loaded
+    // plugin instances (as OpenCode does, once per location).
+    const eventId = `evt-shared-${Math.random()}`;
+    const first = isDuplicateEvent(eventId);
+    const second = isDuplicateEvent(eventId);
+
+    expect(first).toBe(false);
+    expect(second).toBe(true);
+
+    // And the full setup() path still works with the shared registry.
+    const cleanupA = await pkg.setup(makeCtx(eventId) as never);
+    const cleanupB = await pkg.setup(makeCtx(eventId) as never);
+    await new Promise((r) => setTimeout(r, 50));
+    await cleanupA?.();
+    await cleanupB?.();
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+    delete process.env.OPENCODE_CONFIG_DIR;
+  });
+
+  test('events for another location are ignored by this instance', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'svn-v2-loc-'));
+    process.env.OPENCODE_CONFIG_DIR = tmp;
+    fs.writeFileSync(path.join(tmp, 'smart-voice-notify.jsonc'), JSON.stringify({ enabled: false }));
+
+    const seen: Array<string> = [];
+    const makeCtx = (events: Array<Record<string, unknown>>) => ({
+      location: { directory: tmp, project: { id: 'p1', directory: tmp, canonical: tmp } },
+      options: {},
+      session: { get: async () => ({ id: 'ses_1' }) },
+      event: {
+        subscribe: ({ signal }: { signal?: AbortSignal } = {}) => ({
+          [Symbol.asyncIterator]: () => {
+            let i = 0;
+            return {
+              next: async () => {
+                if (i >= events.length || signal?.aborted) return { done: true, value: undefined };
+                const value = events[i++]!;
+                seen.push(String(value.type));
+                return { done: false, value };
+              },
+            };
+          },
+        }),
+      },
+    });
+
+    const cleanup = await pkg.setup(
+      makeCtx([
+        { id: 'e-other', type: 'session.idle', location: { directory: '/some/other/location' }, data: { sessionID: 'ses_x' } },
+        { id: 'e-own', type: 'session.idle', location: { directory: tmp }, data: { sessionID: 'ses_1' } },
+      ]) as never,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    await cleanup?.();
+
+    // Both events reach the subscription, but the foreign one must not have
+    // been processed (it would otherwise play audio for another project).
+    expect(seen).toContain('session.idle');
 
     fs.rmSync(tmp, { recursive: true, force: true });
     delete process.env.OPENCODE_CONFIG_DIR;

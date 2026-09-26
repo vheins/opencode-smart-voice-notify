@@ -36,4 +36,4 @@ export default {
 export { SmartVoiceNotifyPlugin };
 
 // Re-export the V2 building blocks for consumers that need them.
-export { smartVoiceNotifyV2, PLUGIN_ID, translateV2Event, createShellRunner, createClientShim } from './v2.js';
+export { smartVoiceNotifyV2, PLUGIN_ID, translateV2Event, createShellRunner, createClientShim, isDuplicateEvent } from './v2.js';
