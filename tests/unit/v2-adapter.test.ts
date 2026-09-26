@@ -142,7 +142,7 @@ describe('V2 shell runner shim', () => {
 
   test('timeout() is chainable and kills a long-running command', async () => {
     const $ = createShellRunner();
-    const result = await $`sleep 10`.quiet().nothrow().timeout(150);
+    const result = await $`sleep 10`.quiet().nothrow().timeout!(150);
     expect(result.exitCode).toBe(124);
   });
 });

@@ -16,8 +16,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "build:types": "tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "compile": "tsc -p tsconfig.build.json",
+    "compile:types": "tsc -p tsconfig.build.json --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:watch": "bun test --watch",
@@ -46,7 +46,8 @@
   ],
   "files": [
     "dist/",
-    "assets/"
+    "assets/",
+    "server.js"
   ],
   "repository": {
     "type": "git",
