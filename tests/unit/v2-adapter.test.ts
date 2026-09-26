@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Import the BUILT package entry point (dist/index.js) exactly as OpenCode would.
-import pkg, { SmartVoiceNotifyPlugin, translateV2Event, createShellRunner, createClientShim, isDuplicateEvent, PLUGIN_ID } from '../../dist/index.js';
+import pkg, { SmartVoiceNotifyPlugin, translateV2Event, createShellRunner, createClientShim, isDuplicateEvent, rememberSessionLocation, getSessionLocation, PLUGIN_ID } from '../../dist/index.js';
 
 describe('V2 package entry (dist/index.js)', () => {
   test('default export is a V2 definition object with id + setup', () => {
@@ -40,6 +40,13 @@ describe('V2 event translation', () => {
     const out = translateV2Event({ type: 'session.created', data: { sessionID: 'ses_2' } });
     expect(out?.type).toBe('session.created');
     expect(out?.properties?.info).toEqual({ id: 'ses_2' });
+  });
+
+  test('session.execution.succeeded -> session.idle (agent finished)', () => {
+    expect(translateV2Event({ type: 'session.execution.succeeded', data: { sessionID: 'ses_done' } })).toEqual({
+      type: 'session.idle',
+      properties: { sessionID: 'ses_done' },
+    });
   });
 
   test('session.execution.failed -> session.error', () => {
@@ -331,6 +338,56 @@ describe('V2 cross-instance event de-duplication', () => {
     // Both events reach the subscription, but the foreign one must not have
     // been processed (it would otherwise play audio for another project).
     expect(seen).toContain('session.idle');
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+    delete process.env.OPENCODE_CONFIG_DIR;
+  });
+
+  test('session location registry remembers and expires per-session directories', () => {
+    const id = `ses-${Math.random()}`;
+    expect(getSessionLocation(id)).toBeUndefined();
+    rememberSessionLocation(id, '/tmp/foo');
+    expect(getSessionLocation(id)).toBe('/tmp/foo');
+    expect(getSessionLocation(undefined)).toBeUndefined();
+  });
+
+  test('a location-less execution.succeeded is routed via the remembered session location', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'svn-v2-route-'));
+    process.env.OPENCODE_CONFIG_DIR = tmp;
+    fs.writeFileSync(path.join(tmp, 'smart-voice-notify.jsonc'), JSON.stringify({ enabled: false }));
+
+    const sessionID = `ses-route-${Math.random()}`;
+    const events = [
+      // session.created carries a location -> registers the session
+      { id: 'r-created', type: 'session.created', location: { directory: tmp }, data: { sessionID } },
+      // execution.succeeded carries NO location -> must route via the registry
+      { id: 'r-done', type: 'session.execution.succeeded', data: { sessionID } },
+    ];
+
+    const makeCtx = () => ({
+      location: { directory: tmp, project: { id: 'p1', directory: tmp, canonical: tmp } },
+      options: {},
+      session: { get: async () => ({ id: sessionID }) },
+      event: {
+        subscribe: ({ signal }: { signal?: AbortSignal } = {}) => ({
+          [Symbol.asyncIterator]: () => {
+            let i = 0;
+            return {
+              next: async () => {
+                if (i >= events.length || signal?.aborted) return { done: true, value: undefined };
+                return { done: false, value: events[i++]! };
+              },
+            };
+          },
+        }),
+      },
+    });
+
+    const cleanup = await pkg.setup(makeCtx() as never);
+    await new Promise((r) => setTimeout(r, 50));
+    await cleanup?.();
+
+    expect(getSessionLocation(sessionID)).toBe(tmp);
 
     fs.rmSync(tmp, { recursive: true, force: true });
     delete process.env.OPENCODE_CONFIG_DIR;

@@ -104,6 +104,65 @@ export const isDuplicateEvent = (eventId: string | undefined): boolean => {
 };
 
 // ============================================================
+// Session -> location routing
+// ============================================================
+
+/**
+ * Some V2 events that we must act on carry no `location` (notably
+ * `session.execution.succeeded` / `session.execution.failed`), yet the plugin
+ * is loaded once per location and must only react to sessions that belong to
+ * its own location.  We therefore remember the directory a session was last
+ * seen in (from any event that does carry a location) so location-less events
+ * can be routed to the right instance.
+ */
+const SESSION_LOCATION_TTL_MS = 30 * 60_000;
+const SESSION_LOCATION_MAX = 2048;
+const SESSION_LOCATIONS_KEY = Symbol.for('opencode-smart-voice-notify.session-locations');
+
+interface SessionLocationRegistry {
+  locations: Map<string, { directory: string; timestamp: number }>;
+}
+
+const getSessionLocationRegistry = (): SessionLocationRegistry => {
+  const globalStore = globalThis as unknown as Record<symbol, SessionLocationRegistry | undefined>;
+  let registry = globalStore[SESSION_LOCATIONS_KEY];
+  if (!registry) {
+    registry = { locations: new Map() };
+    globalStore[SESSION_LOCATIONS_KEY] = registry;
+  }
+  return registry;
+};
+
+/** Remember the directory a session was seen in (process-wide). */
+export const rememberSessionLocation = (sessionID: string, directory: string): void => {
+  if (!sessionID || !directory) return;
+  const registry = getSessionLocationRegistry();
+  const now = Date.now();
+
+  if (registry.locations.size >= SESSION_LOCATION_MAX) {
+    for (const [id, entry] of registry.locations) {
+      if (now - entry.timestamp > SESSION_LOCATION_TTL_MS) {
+        registry.locations.delete(id);
+      }
+    }
+  }
+
+  registry.locations.set(sessionID, { directory, timestamp: now });
+};
+
+/** Look up the last directory a session was seen in, if still fresh. */
+export const getSessionLocation = (sessionID: string | undefined): string | undefined => {
+  if (!sessionID) return undefined;
+  const entry = getSessionLocationRegistry().locations.get(sessionID);
+  if (!entry) return undefined;
+  if (Date.now() - entry.timestamp > SESSION_LOCATION_TTL_MS) {
+    getSessionLocationRegistry().locations.delete(sessionID);
+    return undefined;
+  }
+  return entry.directory;
+};
+
+// ============================================================
 // Shell runner shim
 // ============================================================
 
@@ -270,6 +329,14 @@ export const translateV2Event = (event: V2EventEnvelope): PluginEvent | null => 
     case 'session.idle':
       return { type: 'session.idle', properties: { sessionID: data.sessionID as string } };
 
+    // V2 defines `session.idle` in its schema but never actually emits it: the
+    // real "agent finished working" signal is `session.execution.succeeded`
+    // (with `session.execution.failed` / `.interrupted` for the other outcomes).
+    // Map it onto the V1 `session.idle` handler so completion notifications and
+    // TTS reminders fire again.
+    case 'session.execution.succeeded':
+      return { type: 'session.idle', properties: { sessionID: data.sessionID as string } };
+
     case 'session.created':
       return {
         type: 'session.created',
@@ -408,13 +475,26 @@ export const smartVoiceNotifyV2: Plugin.Plugin = Plugin.define({
         for await (const raw of ctx.event.subscribe({ signal: abort.signal })) {
           if (disposed) break;
           const envelope = raw as unknown as V2EventEnvelope;
+          const data = envelope.data ?? {};
+          const sessionID = typeof data.sessionID === 'string' ? data.sessionID : undefined;
+
+          // Remember which location each session belongs to.  Several V2 events
+          // (notably `session.execution.succeeded`) carry no location, so this
+          // lets the correct per-location instance handle them.
+          const eventDirectory = envelope.location?.directory;
+          if (sessionID && eventDirectory) {
+            rememberSessionLocation(sessionID, eventDirectory);
+          }
+
           // OpenCode V2 loads this plugin once per location while all instances
           // share one process-wide event stream.  Ignore events that belong to a
           // different location so each notification is handled by the instance
           // for the location it actually happened in (preserving per-project
-          // names and sounds).
-          const eventDirectory = envelope.location?.directory;
-          if (eventDirectory && resolvePath(eventDirectory) !== ownDirectory) continue;
+          // names and sounds).  Events without a location fall back to the
+          // remembered location for their session.
+          const resolvedDirectory = eventDirectory ?? getSessionLocation(sessionID);
+          if (resolvedDirectory && resolvePath(resolvedDirectory) !== ownDirectory) continue;
+
           // Safety net for events that carry no location (or for two instances
           // that share a directory): let only the first observer handle it so
           // audio is never played once per loaded location.
