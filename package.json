@@ -64,8 +64,10 @@
     "@elevenlabs/elevenlabs-js": "^2.52.0",
     "@opencode/plugin": "2.0.12",
     "detect-terminal": "^3.0.0",
-    "msedge-tts": "^2.0.5",
     "node-notifier": "^10.0.1"
+  },
+  "optionalDependencies": {
+    "msedge-tts": "^2.0.5"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "^1.17.3"
